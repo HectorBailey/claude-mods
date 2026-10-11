@@ -32,4 +32,4 @@ A recent Claude Code (run `claude update`). Mods use Claude Code's function hook
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The licence covers the code, not Claude Code's mascot, which `decision-log` draws as a fan homage and which belongs to Anthropic.

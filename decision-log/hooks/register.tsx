@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { Decision, DecisionTab, Reversibility, Verdict, VerdictChange } from '../types'
 
-import { banner, MASCOT } from './graphics'
+import { banner, MASCOT_IDLE_FRAMES, MASCOT_SIZE, MASCOT_WORKING_FRAMES } from './graphics'
 
 const PANE = 'decisions'
+const TITLE = ' ◆ Decision log'
 const TOOL = 'mcp__decision-log__log_decision'
 // Matched by pattern: the engine types tool names by the MCP tools connected at load, which may not list this one.
 const TOOL_PATTERN = /^mcp__decision-log__log_decision$/
@@ -142,6 +143,79 @@ const drafts = new Map<number, string>()
 
 // The person closed the pane: a new decision updates the status line instead of reopening it.
 let isPaneDismissed = false
+
+// Pixel animation: one timer runs while the pane shows something that moves, and stops once
+// nothing does. The terminal's last drawing says what that is; the timer repaints between drawings.
+const TICK_MS = 100
+const TICKS_PER_MASCOT_FRAME = 3
+let animation: Timer | undefined
+let tick = 0
+let mascotFrame = 0
+let isMascotShown = false
+// The mascot acts out decisions while Claude works and sits blinking otherwise.
+let isMascotBusy = false
+// What the mascot shows now, so the timer repaints only when a frame differs.
+let mascotShowing = ''
+let shimmer: { width: number; left: string; right: string } | undefined
+
+const mascotFrames = (): readonly string[] => (isMascotBusy ? MASCOT_WORKING_FRAMES : MASCOT_IDLE_FRAMES)
+
+// The frame a drawing shows now; the timer carries on from it.
+const mascotNow = (): string => {
+  mascotShowing = mascotFrames()[mascotFrame] ?? ''
+
+  return mascotShowing
+}
+
+// Where the light sweeping the title bar is at a tick: in from the left, out past the right.
+const glowAt = (at: number, width: number): number => ((at * 1.5) % (width + 24)) - 12
+
+function stopAnimation() {
+  animation?.cancel()
+  animation = undefined
+}
+
+async function repaint($: EngineInterface, key: string, cells: string) {
+  try {
+    const result = await $.ui.blit({ requestId: PANE, key, cells })
+
+    // Refused: the pane closed or its drawing moved on. The next drawing starts it again.
+    if (result.deny !== undefined) {
+      stopAnimation()
+    }
+  } catch {
+    stopAnimation()
+  }
+}
+
+function animate($: EngineInterface) {
+  if (animation !== undefined || (!isMascotShown && shimmer === undefined)) {
+    return
+  }
+
+  animation = $.clock.every(TICK_MS, () => {
+    tick += 1
+
+    if (!isMascotShown && shimmer === undefined) {
+      stopAnimation()
+      return
+    }
+
+    if (isMascotShown && tick % TICKS_PER_MASCOT_FRAME === 0) {
+      const shown = mascotShowing
+      mascotFrame = (mascotFrame + 1) % mascotFrames().length
+
+      if (mascotNow() !== shown) {
+        void repaint($, 'mascot', mascotShowing)
+      }
+    }
+
+    if (shimmer !== undefined) {
+      const { width, left, right } = shimmer
+      void repaint($, 'banner', banner(width, left, right, glowAt(tick, width)))
+    }
+  })
+}
 
 function showStatus($: EngineInterface, list: readonly Decision[]) {
   const pending = list.filter(one => one.verdict === 'pending').length
@@ -437,6 +511,11 @@ export const register: Register = on => {
     const change = await read($, lastChange)
     const isClaudeWorking = await read($, isWorking)
 
+    if (Raster !== undefined && isMascotBusy !== isClaudeWorking) {
+      isMascotBusy = isClaudeWorking
+      mascotFrame = 0
+    }
+
     const pending = list.filter(one => one.verdict === 'pending').length
     const approved = list.filter(one => one.verdict === 'approved').length
     const rejected = list.filter(one => one.verdict === 'rejected').length
@@ -479,9 +558,11 @@ export const register: Register = on => {
       const right = isClaudeWorking ? '● Claude is working ' : `${list.length} logged `
 
       if (Raster !== undefined) {
-        return (
-          <Raster key="banner" columns={width} rows={1} cells={banner(width, ' ◆ Decision log', right)} />
-        )
+        // While Claude works a light sweeps along the bar, from where the timer has it now.
+        const glow = isClaudeWorking ? glowAt(tick, width) : undefined
+        shimmer = isClaudeWorking ? { width, left: TITLE, right } : undefined
+
+        return <Raster key="banner" columns={width} rows={1} cells={banner(width, TITLE, right, glow)} />
       }
 
       return (
@@ -650,6 +731,17 @@ export const register: Register = on => {
       )
     }
 
+    const hero = () => (
+      <Box flexDirection="column" alignItems="center">
+        {Raster !== undefined && (
+          <Raster key="mascot" columns={MASCOT_SIZE.columns} rows={MASCOT_SIZE.rows} cells={mascotNow()} />
+        )}
+        <Text color={isClaudeWorking ? 'claude' : 'inactive'} bold={isClaudeWorking}>
+          {isClaudeWorking ? 'working' : 'idle'}
+        </Text>
+      </Box>
+    )
+
     const overview = () => {
       const byUndo = (['easy', 'moderate', 'hard'] as const).map(level => ({
         level,
@@ -662,13 +754,9 @@ export const register: Register = on => {
         <Box flexDirection="column">
           {heading('Overview')}
           <Box gap={3} marginTop={1}>
-            {Raster !== undefined && (
-              <Raster key="mascot" columns={MASCOT.columns} rows={MASCOT.rows} cells={MASCOT.cells} />
-            )}
+            {hero()}
             <Box flexDirection="column" justifyContent="center">
-              <Text bold>
-                {pending === 0 ? '✓ All caught up' : `${pending} waiting for review`}
-              </Text>
+              <Text bold>{pending === 0 ? '✓ All caught up' : `${pending} waiting for review`}</Text>
               <Text dimColor>{`${list.length} decisions this session`}</Text>
               <Box marginTop={1} flexDirection="column">
                 <Text>
@@ -734,25 +822,12 @@ export const register: Register = on => {
       )
     }
 
-    return (
+    const tree = (
       <Box flexDirection="column">
         {header()}
         {list.length === 0 && (
-          <Box
-            flexDirection="column"
-            alignItems="center"
-            borderStyle="round"
-            borderDimColor
-            paddingX={1}
-            marginTop={1}
-          >
-            {Raster !== undefined && (
-              <Raster key="mascot" columns={MASCOT.columns} rows={MASCOT.rows} cells={MASCOT.cells} />
-            )}
-            <Text bold>No decisions yet</Text>
-            <Text dimColor>
-              Claude is busy making decisions in secret. Each one you did not spell out turns up here.
-            </Text>
+          <Box flexDirection="column" marginTop={Math.max(1, Math.floor((e.props.scroll.bodyRows - 6) / 2))}>
+            {hero()}
           </Box>
         )}
         {list.length > 0 && (
@@ -817,5 +892,13 @@ export const register: Register = on => {
         )}
       </Box>
     )
+
+    if (Raster !== undefined) {
+      isMascotShown = list.length === 0 || shown.length === 0
+      animate($)
+    }
+
+    return tree
   })
 }
+

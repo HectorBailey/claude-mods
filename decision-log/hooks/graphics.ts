@@ -68,12 +68,15 @@ class Cells {
 }
 
 // One row: text over a left-to-right gradient, the right-hand text flush with the end.
-export function banner(columns: number, left: string, right: string): string {
+// `glow`, a column, lights the gradient around it: moved each frame, it sweeps along.
+export function banner(columns: number, left: string, right: string, glow?: number): string {
   const cells = new Cells(columns, 1)
   const rightStart = columns - right.length
 
   for (let x = 0; x < columns; x += 1) {
-    const background = mix(PALETTE.claude, PALETTE.violet, columns === 1 ? 0 : x / (columns - 1))
+    const gradient = mix(PALETTE.claude, PALETTE.violet, columns === 1 ? 0 : x / (columns - 1))
+    const light = glow === undefined ? 0 : Math.max(0, 1 - Math.abs(x - glow) / 6) * 0.45
+    const background = mix(gradient, PALETTE.white, light)
     const char = left[x] ?? (x >= rightStart ? right[x - rightStart] : undefined) ?? ' '
     cells.set(x, 0, char, PALETTE.white, background)
   }
@@ -81,61 +84,154 @@ export function banner(columns: number, left: string, right: string): string {
   return cells.encode()
 }
 
-// A picture from rows of letters, one letter per pixel; a letter with no colour is left blank.
-export function sprite(
+export type Glyph = { column: number; row: number; char: string; color: number }
+
+// Quarter blocks by which of a cell's four pixels are lit: upper left 1, upper right 2,
+// lower left 4, lower right 8.
+const QUADRANTS = ' ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█'
+
+// A one-colour picture in quarter blocks: each cell shows 2 by 2 pixels, each half a column wide
+// and half a row tall, the way Claude Code draws its own logo. Lit pixels are letters, unlit dots.
+export function quarterSprite(
   art: readonly string[],
-  colors: Readonly<Record<string, number>>,
+  color: number,
+  glyphs: readonly Glyph[] = [],
 ): { columns: number; rows: number; cells: string } {
-  const columns = Math.max(...art.map(line => line.length))
+  const columns = Math.ceil(Math.max(...art.map(line => line.length)) / 2)
   const rows = Math.ceil(art.length / 2)
   const cells = new Cells(columns, rows)
-  const pixel = (x: number, y: number): number | undefined => colors[art[y]?.charAt(x) ?? '']
+  const isLit = (x: number, y: number) => (art[y]?.charAt(x) ?? '.') !== '.' && art[y]?.charAt(x) !== ''
 
   for (let row = 0; row < rows; row += 1) {
-    for (let x = 0; x < columns; x += 1) {
-      const top = pixel(x, row * 2)
-      const bottom = pixel(x, row * 2 + 1)
+    for (let column = 0; column < columns; column += 1) {
+      const [x, y] = [column * 2, row * 2]
+      const mask =
+        (isLit(x, y) ? 1 : 0) | (isLit(x + 1, y) ? 2 : 0) | (isLit(x, y + 1) ? 4 : 0) | (isLit(x + 1, y + 1) ? 8 : 0)
 
-      if (top !== undefined) {
-        cells.set(x, row, '▀', top, bottom ?? DEFAULT_COLOR)
-      } else if (bottom !== undefined) {
-        cells.set(x, row, '▄', bottom, DEFAULT_COLOR)
+      if (mask !== 0) {
+        cells.set(column, row, QUADRANTS.charAt(mask), color, DEFAULT_COLOR)
       }
     }
   }
 
+  glyphs.forEach(({ column, row, char, color: glyphColor }) => cells.set(column, row, char, glyphColor, DEFAULT_COLOR))
+
   return { columns, rows, cells: cells.encode() }
 }
 
-// An orange critter glancing over its shoulder while it fills in a clipboard: decisions, made in secret.
-const MASCOT_ART = [
-  '..........................',
-  '....OOOOOOOOOOOO..........',
-  '...OOOOOOOOOOOOOO....CCC..',
-  '...ODDDOOOODDDOOO..BBBCBBB',
-  '...OEWWOOOOEWWOOO.KBPPPPPB',
-  '...OOOOOOOOOOOOOO.YBPLLLPB',
-  '.DDOOOOOOOOOOOOOOOYBPPPPPB',
-  '.DDOOOOOOOOOOOOOOODBPLLPPB',
-  '...OOOOOOOOOOOOOO..BPPPPPB',
-  '...OOOOOOOOOOOOOO..BPLLLPB',
-  '...OOOOOOOOOOOOOO..BPPPPPB',
-  '...OOOOOOOOOOOOOO..BBBBBBB',
-  '....DD.DD...DD.DD.........',
-  '....DD.DD...DD.DD.........',
+// The mascot: Claude Code's critter, a fan homage drawn pixel for pixel from the block-character
+// logo on its welcome screen (2 by 2 pixels per character, so 18 by 6: 9 columns by 3 rows). It glances about
+// and mulls a decision over until a tick or a cross appears in its thought bubble.
+const CRITTER = [
+  '...OOOOOOOOOOOO...',
+  '...OOOOOOOOOOOO...',
+  '.OOOOOOOOOOOOOOOO.',
+  '...OOOOOOOOOOOO...',
+  '....O.O....O.O....',
+  '..................',
 ]
 
-const MASCOT_COLORS: Readonly<Record<string, number>> = {
-  O: PALETTE.claude,
-  D: 0xb0583a,
-  E: 0x1f1f1f,
-  W: 0xf4f4f4,
-  B: 0x8a5a3b,
-  P: 0xeeeeee,
-  L: 0x8e959e,
-  C: 0xb8bec6,
-  Y: 0xe8c547,
-  K: 0x3a3a3a,
+// Its eyes are holes in the head; looking left or right moves them a pixel.
+const EYES = { left: [4, 11], ahead: [5, 12], right: [6, 13], shut: [] } as const
+
+// In pixels: the critter sits in the middle, under a row for its thought bubble, with as much
+// room on its left as the bubble takes on its right, so centring the picture centres the critter.
+const CANVAS = { width: 42, height: 8, headroom: 2, inset: 12 }
+
+// A thought bubble builds up from the head in stages: a dot, a small ring, then the bubble,
+// where the decision appears. Cells, clear of the critter.
+const BUBBLE_COLOR = 0x9aa0a6
+const BUBBLE_STAGES: readonly Glyph[][] = [
+  [],
+  [{ column: 16, row: 1, char: '·', color: BUBBLE_COLOR }],
+  [{ column: 17, row: 0, char: 'o', color: BUBBLE_COLOR }],
+  [
+    { column: 18, row: 0, char: '(', color: BUBBLE_COLOR },
+    { column: 20, row: 0, char: ')', color: BUBBLE_COLOR },
+  ],
+]
+const VERDICTS = {
+  approved: { column: 19, row: 0, char: '✓', color: 0x4eba65 },
+  rejected: { column: 19, row: 0, char: '✗', color: 0xe5534b },
+} as const
+
+type Pose = {
+  eyes: keyof typeof EYES
+  bubble?: 0 | 1 | 2 | 3
+  verdict?: keyof typeof VERDICTS
 }
 
-export const MASCOT = sprite(MASCOT_ART, MASCOT_COLORS)
+// While Claude works: look about, let a thought slowly form, blink on it, then decide. Twice:
+// once a tick, once a cross. Each pose shows for one frame of the pane's animation.
+const decision = (verdict: keyof typeof VERDICTS): Pose[] => [
+  { eyes: 'ahead' },
+  { eyes: 'ahead' },
+  { eyes: 'left' },
+  { eyes: 'right' },
+  { eyes: 'left' },
+  { eyes: 'ahead' },
+  { eyes: 'ahead', bubble: 1 },
+  { eyes: 'ahead', bubble: 1 },
+  { eyes: 'ahead', bubble: 2 },
+  { eyes: 'ahead', bubble: 2 },
+  { eyes: 'ahead', bubble: 3 },
+  { eyes: 'shut', bubble: 3 },
+  { eyes: 'ahead', bubble: 3 },
+  { eyes: 'ahead', bubble: 3, verdict },
+  { eyes: 'ahead', bubble: 3, verdict },
+  { eyes: 'ahead', bubble: 3, verdict },
+  { eyes: 'ahead', bubble: 3, verdict },
+]
+
+const WORKING_POSES: readonly Pose[] = [...decision('approved'), ...decision('rejected')]
+
+// While Claude is idle: sit still and blink now and then, sometimes twice.
+const IDLE_POSES: readonly Pose[] = [
+  ...Array.from({ length: 26 }, (): Pose => ({ eyes: 'ahead' })),
+  { eyes: 'shut' },
+  ...Array.from({ length: 14 }, (): Pose => ({ eyes: 'ahead' })),
+  { eyes: 'shut' },
+  { eyes: 'ahead' },
+  { eyes: 'shut' },
+]
+
+const pose = ({ eyes }: Pose): string[] => {
+  const critter = CRITTER.map(line => [...line])
+
+  EYES[eyes].forEach(x => {
+    const line = critter[1]
+
+    if (line !== undefined) {
+      line[x] = '.'
+    }
+  })
+
+  const top = CANVAS.headroom
+  const canvas = Array.from({ length: CANVAS.height }, () => [...'.'.repeat(CANVAS.width)])
+  critter.forEach((line, y) =>
+    line.forEach((letter, x) => {
+      const row = canvas[top + y]
+
+      if (letter !== '.' && row !== undefined) {
+        row[CANVAS.inset + x] = letter
+      }
+    }),
+  )
+
+  return canvas.map(line => line.join(''))
+}
+
+const thought = ({ bubble = 0, verdict }: Pose): Glyph[] => [
+  ...BUBBLE_STAGES.slice(1, bubble + 1).flat(),
+  ...(verdict === undefined ? [] : [VERDICTS[verdict]]),
+]
+
+const frames = (poses: readonly Pose[]): readonly string[] =>
+  poses.map(one => quarterSprite(pose(one), PALETTE.claude, thought(one)).cells)
+
+export const MASCOT_WORKING_FRAMES = frames(WORKING_POSES)
+
+export const MASCOT_IDLE_FRAMES = frames(IDLE_POSES)
+
+export const MASCOT_SIZE = { columns: CANVAS.width / 2, rows: CANVAS.height / 2 }
+

@@ -5,7 +5,7 @@ A Claude Code mod that makes Claude's judgement calls visible while it works, so
 ## What it does
 
 - Gives Claude a `log_decision` tool and a system prompt section asking it to log each choice you did not spell out: picking an approach or library, resolving an ambiguity with an assumption, skipping or stubbing something, changing scope, anything costly to undo.
-- Each decision lands in a **Decisions** pane: filter tabs with counts (All, To review, Approved, Rejected; it opens on To review), a one-line-per-decision table, and a detail panel for the selected row with what was chosen, why, what else was considered and the ramifications. Rows and the panel border carry a `●○○` gauge coloured by how hard the decision is to undo (green easy, yellow moderate, red hard), and a bar under the tabs fills green and red as you approve and reject. When nothing is waiting, the pane shows a session overview: your verdict counts, how hard the decisions are to undo, and the most recent ones, kept company by a small pixel critter making its own decisions in secret. In the terminal the title bar and the critter are pixel graphics; the desktop app and VS Code get a text version.
+- Each decision lands in a **Decisions** pane: filter tabs with counts (All, To review, Approved, Rejected; it opens on To review), a one-line-per-decision table, and a detail panel for the selected row with what was chosen, why, what else was considered and the ramifications. Rows and the panel border carry a `●○○` gauge coloured by how hard the decision is to undo (green easy, yellow moderate, red hard), and a bar under the tabs fills green and red as you approve and reject. When nothing is waiting, the pane shows a session overview: your verdict counts, how hard the decisions are to undo, and the most recent ones, kept company by Claude Code's own critter, beside the stats with a word under it saying whether Claude is idle or working: while Claude works it glances about, lets a thought bubble slowly form, then decides with a tick or a cross; otherwise it sits and blinks now and then. Before the first decision it sits in the middle of the pane on its own. While Claude works, a light sweeps along the title bar. In the terminal the title bar and the critter are drawn in coloured block characters and animate only while they are on screen; the desktop app and VS Code get a text version.
 - Approve or reject each one, with an optional comment. Claude does not wait for you; it keeps working and you review at your own pace.
 - A rejection, or an approval with a comment, is added to the conversation straight away. Mid-turn, Claude reads it at its next step and revisits the decision. If Claude is idle, the pane offers **Ask Claude to revisit now**, or it picks the feedback up with your next message.
 - A plain approval sends nothing, so it costs no tokens.
@@ -59,3 +59,7 @@ Check and test it with:
 claude plugin validate ./decision-log
 claude plugin test ./decision-log
 ```
+
+## Credits
+
+The critter is a fan homage to Claude Code's mascot, drawn from the block-character logo on its welcome screen. The character belongs to Anthropic and is not covered by this repository's licence.

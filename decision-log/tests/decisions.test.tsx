@@ -39,6 +39,8 @@ const PNPM = {
 const logDecision = ($: Engine, input: Record<string, unknown>) => $.tool.call(input as never)
 
 const quietUi = (on: On) => {
+  mock.clock(on)
+  on('ui.blit', () => ({ value: {} }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
@@ -121,10 +123,12 @@ test('the hotkeys switch off while a comment is being typed', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: 'fine by me' })).toBeDefined()
 })
 
-test('an empty log draws its placeholder card', async $ => {
+test('an empty log shows the critter, idle', async ($, on) => {
+  quietUi(on)
+
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: 'No decisions yet' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'idle' })).toBeDefined()
     await ui.unmount()
   }
 })
@@ -189,4 +193,55 @@ test('a reviewed decision opened from the list can be switched or reopened', asy
   expect(lastRow()).toMatch(/withdrew their rejection of D1/)
   expect((await ui.find({ key: 'tab:pending' }))?.text).toMatch(/To review 1/)
   expect(await ui.find({ key: 'approve' })).toBeDefined()
+})
+
+const watchMascot = (on: On) => {
+  const frames: string[] = []
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.blit', ($, e) => {
+    if ('cells' in e && e.key === 'mascot') {
+      frames.push(e.cells)
+    }
+
+    return { value: {} }
+  })
+
+  return frames
+}
+
+test('while Claude is idle the mascot sits and blinks now and then', async ($, on) => {
+  const clock = mock.clock(on)
+  const frames = watchMascot(on)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await clock.advance(15000)
+
+  // Only blinks repaint: eyes shut, then open again, a handful of times in 15 seconds.
+  expect(frames.length).toBeGreaterThanOrEqual(2)
+  expect(frames.length).toBeLessThanOrEqual(8)
+  expect(new Set(frames).size).toBe(2)
+  await ui.unmount()
+})
+
+test('while Claude works the mascot acts out decisions, and stops once off screen', async ($, on) => {
+  const clock = mock.clock(on)
+  const frames = watchMascot(on)
+  on('turn.start', ($2, e) => ({ turnId: e.turnId }))
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: 'idle' })).toBeDefined()
+  await $.turn.start({ text: 'work', turnId: 'turn-1' })
+  expect(await ui.find({ type: 'Text', text: 'working' })).toBeDefined()
+  await clock.advance(6000)
+  expect(new Set(frames).size).toBeGreaterThan(5)
+
+  // A decision arrives: the table replaces the mascot, so it stops being repainted.
+  await logDecision($, PNPM)
+  await clock.advance(300)
+  const shown = frames.length
+  await clock.advance(3000)
+  expect(frames.length).toBe(shown)
+  await ui.unmount()
 })

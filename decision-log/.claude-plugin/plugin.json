@@ -1,0 +1,7 @@
+{
+  "name": "decision-log",
+  "version": "0.1.0",
+  "description": "Claude logs its judgement calls as it works; approve or reject each one with a comment from a side pane",
+  "author": { "name": "Hector Bailey" },
+  "types": "./types/index.d.ts"
+}

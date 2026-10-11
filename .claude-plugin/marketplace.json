@@ -1,0 +1,14 @@
+{
+  "name": "hectorbailey",
+  "description": "Hector Bailey's Claude Code mods",
+  "owner": {
+    "name": "Hector Bailey"
+  },
+  "plugins": [
+    {
+      "name": "decision-log",
+      "source": "./decision-log",
+      "description": "Claude logs its judgement calls as it works; approve or reject each one with a comment from a side pane"
+    }
+  ]
+}

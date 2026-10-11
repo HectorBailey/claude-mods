@@ -1,0 +1,3 @@
+# Types Claude Code lays beside a mod when it loads it for development
+*/.claude-plugin/types/
+node_modules/

@@ -83,9 +83,35 @@ test('a plain approval sends Claude nothing', async ($, on) => {
   await ui.press({ key: 'approve' })
 
   expect(session.appended()).toHaveLength(0)
+  expect(await ui.find({ key: 'revisit' })).toBeUndefined()
   expect((await ui.find({ key: 'tab:approved' }))?.text).toMatch(/Approved 1/)
   // The pane opens on To review, so an approved decision leaves the table.
   expect(await ui.find({ key: 'row:1' })).toBeUndefined()
+})
+
+test('feedback given while Claude is idle can wake it, an approval with a comment too', async ($, on) => {
+  quietUi(on)
+  const session = mock.session(on)
+  const submitted: string[] = []
+  on('prompt.submit', (_$, e) => {
+    submitted.push(e.text)
+    return { text: e.text }
+  })
+
+  await logDecision($, PNPM)
+  await logDecision($, SQLITE)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  await ui.press({ key: 'comment' })
+  await ui.input({ key: 'comment:1', text: 'Add pnpm to the README setup steps' })
+  await ui.press({ key: 'approve' })
+  expect(JSON.stringify(session.appended().at(-1)?.message.content)).toMatch(/approved D1 .*Add pnpm/)
+  expect(await ui.find({ key: 'revisit' })).toBeDefined()
+
+  await ui.press({ key: 'reject' })
+  await ui.press({ key: 'revisit' })
+  expect(submitted).toEqual(['In the decision log I rejected D2 and commented on D1. Please act on my feedback.'])
+  expect(await ui.find({ key: 'revisit' })).toBeUndefined()
 })
 
 test('rows, next and previous flick the detail between decisions', async ($, on) => {

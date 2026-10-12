@@ -17,7 +17,8 @@ export type Decision = {
   isFromSubagent: boolean
   verdict: Verdict
   comment: string
-  // Rejected while Claude was idle: it has the feedback but no turn to act on it yet.
+  // Rejected, or approved with a comment, while Claude was idle: it has the feedback but no
+  // turn to act on it yet.
   isAwaitingRevisit: boolean
 }
 

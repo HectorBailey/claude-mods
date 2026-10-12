@@ -275,12 +275,13 @@ async function setVerdict($: EngineInterface, id: number, verdict: Verdict) {
         return one
       }
 
+      const comment = verdict === 'pending' ? '' : (drafts.get(id) ?? one.comment).trim()
       before = one
       after = {
         ...one,
         verdict,
-        comment: verdict === 'pending' ? '' : (drafts.get(id) ?? one.comment).trim(),
-        isAwaitingRevisit: verdict === 'rejected' && !isClaudeWorking,
+        comment,
+        isAwaitingRevisit: !isClaudeWorking && (verdict === 'rejected' || (verdict === 'approved' && comment !== '')),
       }
 
       return after
@@ -334,17 +335,24 @@ async function undoLastChange($: EngineInterface) {
 }
 
 async function revisit($: EngineInterface) {
-  const ids = (await read($, decisions))
-    .filter(one => one.isAwaitingRevisit)
-    .map(one => `D${one.id}`)
+  const waiting = (await read($, decisions)).filter(one => one.isAwaitingRevisit)
+  const ids = (verdict: Verdict) =>
+    waiting
+      .filter(one => one.verdict === verdict)
+      .map(one => `D${one.id}`)
+      .join(', ')
+  const done = [
+    ids('rejected') === '' ? '' : `rejected ${ids('rejected')}`,
+    ids('approved') === '' ? '' : `commented on ${ids('approved')}`,
+  ].filter(part => part !== '')
 
-  if (ids.length === 0) {
+  if (done.length === 0) {
     return
   }
 
   await update($, decisions, all => all.map(one => ({ ...one, isAwaitingRevisit: false })))
   await $.prompt.submit({
-    text: `I rejected ${ids.join(', ')} in the decision log. Please revisit ${ids.length === 1 ? 'it' : 'them'} as my comments say.`,
+    text: `In the decision log I ${done.join(' and ')}. Please act on my feedback.`,
     asUser: true,
   })
 }
@@ -674,7 +682,9 @@ export const register: Register = on => {
           {!isPending && one.comment !== '' && field('↳', 'text', 'Your comment', one.comment)}
           {one.isAwaitingRevisit && (
             <Box marginTop={1}>
-              <Text color="warning">↻ waiting for Claude to revisit</Text>
+              <Text color="warning">
+                {one.verdict === 'rejected' ? '↻ waiting for Claude to revisit' : '↻ waiting for Claude to read your comment'}
+              </Text>
             </Box>
           )}
           {isPending && isCommenting && Input !== undefined && (

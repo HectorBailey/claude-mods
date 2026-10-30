@@ -16,6 +16,9 @@ const MAX_PROFILES = 9
 const KEPT_FRAMES = 8
 const DOUBLE_CLICK_MS = 400
 
+// Headless Chrome never draws a <select>'s list into the screencast, so each page draws its own.
+const SELECT_LISTS = readFileSync(new URL('./select.js', import.meta.url), 'utf8')
+
 const runtime = process.env.XDG_RUNTIME_DIR ?? tmpdir()
 const workDir = join(runtime, 'claude-browser-pane', String(process.pid))
 const socketPath = join(workDir, 'control.sock')
@@ -459,6 +462,11 @@ async function attach(targetId) {
     activeSession = sessionId
     sessionListeners.set(sessionId, (method, params) => onPageEvent(sessionId, method, params))
     await send('Page.enable', {}, sessionId)
+    await send(
+      'Page.addScriptToEvaluateOnNewDocument',
+      { source: SELECT_LISTS, worldName: 'browser-pane', runImmediately: true },
+      sessionId,
+    )
     await resize()
   } catch (error) {
     log('show:', error.message)

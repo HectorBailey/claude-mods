@@ -28,6 +28,7 @@ A Claude Code mod that puts a real Chrome in a pane beside the chat. Links open 
   The hotkeys switch off while the address bar has the keyboard, so typing an address never presses a button.
 - **−** and **+** in the status line zoom the page out and in; the zoom is kept between sessions.
 - The mouse wheel over the page scrolls the page; with the page holding the keyboard, the arrow keys, `PgUp`/`PgDn` and space scroll it too.
+- Dropdowns open as a list drawn in the page (headless Chrome never draws its own into the picture): click an entry, or use the arrow keys and `Enter`. Date and colour pickers still open unseen.
 
 ## Safety
 

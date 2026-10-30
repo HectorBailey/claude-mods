@@ -9,6 +9,11 @@
       "name": "decision-log",
       "source": "./decision-log",
       "description": "Claude logs its judgement calls as it works; approve or reject each one with a comment from a side pane"
+    },
+    {
+      "name": "browser-pane",
+      "source": "./browser-pane",
+      "description": "A Chrome pane beside the chat: links open there instead of your desktop browser, and Claude can drive the same browser"
     }
   ]
 }

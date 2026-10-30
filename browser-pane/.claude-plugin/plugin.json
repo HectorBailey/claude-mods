@@ -1,0 +1,7 @@
+{
+  "name": "browser-pane",
+  "version": "0.1.0",
+  "description": "A Chrome pane beside the chat: links open there instead of your desktop browser, and Claude can drive the same browser",
+  "author": { "name": "Hector Bailey" },
+  "types": "./types/index.d.ts"
+}

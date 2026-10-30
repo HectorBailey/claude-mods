@@ -2,6 +2,9 @@
 // The browser pane's helper: runs headless Chrome, streams the shown tab as PNG frames and takes
 // the pane's clicks, keys and commands over a Unix socket. The hooks module spawns it and reads
 // one JSON message per line on stdout. No dependencies beyond Node 22 (global WebSocket).
+//
+// Each session gets a Chrome of its own: Chrome locks a profile to one instance, so the helper
+// claims the first free profile of a small numbered pool, and Chrome picks its own DevTools port.
 
 import { spawn, execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
@@ -9,18 +12,20 @@ import { createServer } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const PORT = Number(process.env.BROWSER_PANE_PORT ?? 9333)
-const CDP_HTTP = `http://127.0.0.1:${PORT}`
+const MAX_PROFILES = 9
 const KEPT_FRAMES = 8
 const DOUBLE_CLICK_MS = 400
 
 const runtime = process.env.XDG_RUNTIME_DIR ?? tmpdir()
 const workDir = join(runtime, 'claude-browser-pane', String(process.pid))
 const socketPath = join(workDir, 'control.sock')
-const profileDir = join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'claude-browser-pane', 'profile')
+const dataDir = join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'claude-browser-pane')
 
 mkdirSync(workDir, { recursive: true })
-mkdirSync(profileDir, { recursive: true })
+mkdirSync(dataDir, { recursive: true })
+
+// Profile 1, where a session on its own always lands, is `profile`; the others are `profile-<n>`.
+const profileDirFor = slot => join(dataDir, slot === 1 ? 'profile' : `profile-${slot}`)
 
 const emit = message => process.stdout.write(`${JSON.stringify(message)}\n`)
 const log = (...parts) => process.stderr.write(`${parts.join(' ')}\n`)
@@ -29,6 +34,10 @@ const log = (...parts) => process.stderr.write(`${parts.join(' ')}\n`)
 const view = { columns: 80, rows: 24, cellWidth: 10, cellHeight: 20, zoom: 1 }
 
 let chrome = null
+let chromeErrors = ''
+let chromeStarting = null
+let profileSlot = null
+let cdpHttp = null
 let browser = null
 let nextId = 1
 const pending = new Map()
@@ -111,52 +120,204 @@ function findChrome() {
   throw new Error('No Chrome or Chromium found; set BROWSER_PANE_CHROME to its path.')
 }
 
-async function devtoolsUrl() {
-  const response = await fetch(`${CDP_HTTP}/json/version`)
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-  return (await response.json()).webSocketDebuggerUrl
+const isAlive = pid => {
+  try {
+    process.kill(pid, 0)
+
+    return true
+  } catch (error) {
+    return error.code === 'EPERM'
+  }
 }
 
-async function ensureChrome() {
-  if (browser !== null) {
+// The Chrome running on a profile, if any, and whether a live helper still owns it. One whose helper
+// was killed outright has been handed to another parent.
+function chromeOn(profileDir) {
+  let holder = ''
+
+  try {
+    holder = readlinkSync(join(profileDir, 'SingletonLock'))
+  } catch {
+    return null
+  }
+
+  const pid = Number(holder.slice(holder.lastIndexOf('-') + 1))
+
+  try {
+    // Only a Chrome running on this very profile: a stale lock's pid may be another program's now.
+    // Chrome rewrites its command line with spaces between the arguments, so both are read as gaps.
+    const command = ` ${readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ')} `
+
+    if (!command.includes(` --user-data-dir=${profileDir} `)) {
+      return null
+    }
+
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    const parent = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
+    let parentCommand = ''
+
+    try {
+      parentCommand = readFileSync(`/proc/${parent}/cmdline`, 'utf8')
+    } catch {}
+
+    return { pid, isOwned: parentCommand.includes('browser.mjs') }
+  } catch {
+    return null
+  }
+}
+
+// Claims the first profile no other session's helper holds, by a lock file naming this process.
+function claimProfile() {
+  for (let slot = 1; slot <= MAX_PROFILES; slot++) {
+    const lock = join(dataDir, `profile-${slot}.lock`)
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        writeFileSync(lock, String(process.pid), { flag: 'wx' })
+
+        // A helper from before profiles were locked may still be running Chrome on it.
+        if (chromeOn(profileDirFor(slot))?.isOwned) {
+          rmSync(lock, { force: true })
+          break
+        }
+
+        return slot
+      } catch {
+        let holder = 0
+
+        try {
+          holder = Number(readFileSync(lock, 'utf8'))
+        } catch {}
+
+        if (holder > 0 && isAlive(holder)) {
+          break
+        }
+
+        // Left by a helper that died without letting go.
+        rmSync(lock, { force: true })
+      }
+    }
+  }
+
+  throw new Error(`All ${MAX_PROFILES} browser profiles are in use by other sessions.`)
+}
+
+function releaseProfile() {
+  if (profileSlot === null) {
     return
   }
 
-  let url = await devtoolsUrl().catch(() => null)
+  const lock = join(dataDir, `profile-${profileSlot}.lock`)
 
-  if (url === null) {
-    const { window } = windowSize()
-    chrome = spawn(
-      findChrome(),
-      [
-        '--headless=new',
-        `--remote-debugging-port=${PORT}`,
-        '--remote-debugging-address=127.0.0.1',
-        `--user-data-dir=${profileDir}`,
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--force-device-scale-factor=1',
-        `--window-size=${window.width},${window.height}`,
-        'about:blank',
-      ],
-      { stdio: ['ignore', 'ignore', 'pipe'] },
-    )
-    chrome.stderr.on('data', () => {})
-    chrome.on('exit', () => {
-      chrome = null
-    })
-
-    for (let tries = 0; tries < 100 && url === null; tries++) {
-      await new Promise(resolve => setTimeout(resolve, 100))
-      url = await devtoolsUrl().catch(() => null)
+  try {
+    if (readFileSync(lock, 'utf8') === String(process.pid)) {
+      rmSync(lock, { force: true })
     }
+  } catch {}
 
-    if (url === null) {
-      throw new Error('Chrome did not open its DevTools port.')
-    }
+  profileSlot = null
+}
+
+// A Chrome left on this profile by a helper killed outright still holds the profile's lock and would
+// swallow a new launch. The profile is this session's now, so that Chrome is stopped first.
+async function stopOrphan(profileDir) {
+  const running = chromeOn(profileDir)
+
+  if (running === null || running.isOwned) {
+    return
   }
 
-  await connect(url)
+  const { pid } = running
+  process.kill(pid, 'SIGTERM')
+
+  for (let tries = 0; tries < 30 && isAlive(pid); tries++) {
+    await sleep(100)
+  }
+
+  if (isAlive(pid)) {
+    process.kill(pid, 'SIGKILL')
+  }
+}
+
+// Chrome writes the port it picked, and its browser endpoint's path, to this file once it listens.
+function readActivePort(file) {
+  try {
+    const [port, path] = readFileSync(file, 'utf8').split('\n')
+
+    return Number(port) > 0 && path?.startsWith('/') ? { port: Number(port), path: path.trim() } : null
+  } catch {
+    return null
+  }
+}
+
+function ensureChrome() {
+  if (browser !== null) {
+    return Promise.resolve()
+  }
+
+  chromeStarting ??= startChrome().finally(() => {
+    chromeStarting = null
+  })
+
+  return chromeStarting
+}
+
+async function startChrome() {
+  profileSlot ??= claimProfile()
+  const profileDir = profileDirFor(profileSlot)
+  const portFile = join(profileDir, 'DevToolsActivePort')
+
+  mkdirSync(profileDir, { recursive: true })
+  await stopOrphan(profileDir)
+  rmSync(portFile, { force: true })
+
+  const { window } = windowSize()
+  chromeErrors = ''
+  chrome = spawn(
+    findChrome(),
+    [
+      '--headless=new',
+      '--remote-debugging-port=0',
+      '--remote-debugging-address=127.0.0.1',
+      `--user-data-dir=${profileDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--force-device-scale-factor=1',
+      `--window-size=${window.width},${window.height}`,
+      'about:blank',
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  )
+  chrome.stderr.on('data', data => {
+    chromeErrors = (chromeErrors + data).slice(-2000)
+  })
+  chrome.on('exit', () => {
+    chrome = null
+  })
+
+  let endpoint = null
+
+  for (let tries = 0; tries < 100 && endpoint === null && chrome !== null; tries++) {
+    await sleep(100)
+    endpoint = readActivePort(portFile)
+  }
+
+  if (endpoint === null) {
+    chrome?.kill()
+    releaseProfile()
+    throw new Error(`Chrome did not open its DevTools port. ${chromeErrors.trim().split('\n').at(-1) ?? ''}`.trim())
+  }
+
+  cdpHttp = `http://127.0.0.1:${endpoint.port}`
+  await connect(`ws://127.0.0.1:${endpoint.port}${endpoint.path}`)
+}
+
+// Stops this session's Chrome and lets its profile go, as when the last tab closes.
+async function stopChrome() {
+  await send('Browser.close').catch(() => {})
+  chrome?.kill()
 }
 
 function connect(url) {
@@ -165,7 +326,7 @@ function connect(url) {
 
     socket.addEventListener('open', async () => {
       browser = socket
-      emit({ t: 'cdp', url: CDP_HTTP })
+      emit({ t: 'cdp', url: cdpHttp, profile: profileSlot })
 
       try {
         await send('Target.setDiscoverTargets', { discover: true })
@@ -180,7 +341,9 @@ function connect(url) {
       activeSession = null
       activeId = null
       showing = null
+      cdpHttp = null
       tabs.clear()
+      releaseProfile()
       emitTabs()
       emit({ t: 'closed' })
     })
@@ -242,6 +405,11 @@ function onMessage(message) {
     }
 
     emitTabs()
+
+    // The last tab closed: Chrome stops, freeing its profile for another session.
+    if (tabs.size === 0) {
+      void stopChrome()
+    }
   }
 }
 
@@ -580,7 +748,8 @@ async function command(input) {
       return {}
     case 'status':
       return {
-        cdp: browser === null ? null : CDP_HTTP,
+        cdp: browser === null ? null : cdpHttp,
+        profile: profileSlot,
         activeId,
         tabs: [...tabs.values()].map(tab => ({ id: tab.targetId, title: tab.title, url: tab.url })),
       }
@@ -609,6 +778,7 @@ const server = createServer((request, response) => {
 function shutdown() {
   server.close()
   chrome?.kill()
+  releaseProfile()
   rmSync(workDir, { recursive: true, force: true })
   process.exit(0)
 }
@@ -626,5 +796,5 @@ setInterval(() => {
 detectCellSize()
 
 server.listen(socketPath, () => {
-  emit({ t: 'ready', socket: socketPath, cell: { width: view.cellWidth, height: view.cellHeight }, port: PORT })
+  emit({ t: 'ready', socket: socketPath, cell: { width: view.cellWidth, height: view.cellHeight } })
 })

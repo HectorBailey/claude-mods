@@ -15,6 +15,9 @@ declare module 'claude-code' {
       tabs: BrowserTab[]
       activeId: string | null
       phase: HelperPhase
+      // This session's Chrome: its DevTools address and which profile of the pool it runs on.
+      cdp: string | null
+      profile: number | null
       // The helper's last words when it failed; empty otherwise.
       problem: string
       // The page's zoom as a browser shows it: 1.25 draws text a quarter larger.

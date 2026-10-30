@@ -5,8 +5,6 @@ import type { BrowserTab, HelperPhase, PageEvent } from '../types'
 
 const PANE = 'browser'
 const TITLE = ' ◉ Browser'
-const PORT = 9333
-const CDP_URL = `http://127.0.0.1:${PORT}`
 const OPEN_TOOL = 'mcp__browser-pane__open'
 // Matched by pattern: the engine types tool names by the MCP tools connected at load, which may not list these.
 const OPEN_PATTERN = /^mcp__browser-pane__open$/
@@ -24,6 +22,8 @@ const WHEEL_PIXELS = 80
 const tabs = atom({ plugin: 'browser-pane', key: 'tabs' } as const, [] as BrowserTab[])
 const activeId = atom({ plugin: 'browser-pane', key: 'activeId' } as const, null as string | null)
 const phase = atom({ plugin: 'browser-pane', key: 'phase' } as const, 'starting' as HelperPhase)
+const cdp = atom({ plugin: 'browser-pane', key: 'cdp' } as const, null as string | null)
+const profile = atom({ plugin: 'browser-pane', key: 'profile' } as const, null as number | null)
 const problem = atom({ plugin: 'browser-pane', key: 'problem' } as const, '')
 const zoom = atom({ plugin: 'browser-pane', key: 'zoom' } as const, 1)
 const isCatchingLinks = atom({ plugin: 'browser-pane', key: 'isCatchingLinks' } as const, true)
@@ -34,7 +34,7 @@ const INSTRUCTIONS = `# Browser pane
 
 The user has a Chrome browser pane beside this chat. Whenever you want to show them a web page (a site, a local dev server, a published artifact), open it with ${OPEN_TOOL} instead of their desktop browser.
 
-To click, type, read or screenshot pages yourself, drive that same Chrome over the DevTools protocol at ${CDP_URL}; the pane shows what you do. Call ${OPEN_TOOL} or mcp__browser-pane__status first so Chrome is running. With the browser-use CLI, start with \`browser-use --session pane --cdp-url ${CDP_URL} state\`, then leave \`--cdp-url\` out of later commands in that session (\`browser-use --session pane click 4\`). Playwright's \`chromium.connectOverCDP("${CDP_URL}")\` works too. The browser keeps its own profile, so the user may need to sign in to a site there once.`
+To click, type, read or screenshot pages yourself, drive that same Chrome over the DevTools protocol; the pane shows what you do. Each session has a Chrome of its own on a port of its own: call mcp__browser-pane__status (or ${OPEN_TOOL}), which starts it and gives its address and the browser-use commands for it. Use only that address, never another session's. Playwright's \`chromium.connectOverCDP(<address>)\` works too. The browser keeps its own profile, so the user may need to sign in to a site there once.`
 
 const OPEN_DESCRIPTION =
   "Open a web page in the user's browser pane, a Chrome shown beside the chat. Use it instead of the user's desktop browser whenever you want to show them a page. Returns once the page starts loading."
@@ -55,7 +55,7 @@ type Helper = { socket: string }
 
 type HelperMessage =
   | { t: 'ready'; socket: string }
-  | { t: 'cdp'; url: string }
+  | { t: 'cdp'; url: string; profile: number }
   | { t: 'tabs'; activeId: string | null; tabs: BrowserTab[] }
   | { t: 'frame'; file: string; seq: number }
   | { t: 'opened'; url: string }
@@ -92,6 +92,13 @@ const addressFor = (typed: string): string =>
 
 const shortUrl = (url: string): string => url.replace(/^https?:\/\//, '').replace(/\/$/, '')
 
+const portOf = (address: string): string => /:(\d+)$/.exec(address)?.[1] ?? ''
+
+// How Claude reaches this session's Chrome with browser-use: a browser-use session named after the
+// port, so two Claude sessions never share one.
+const driveHint = (address: string): string =>
+  `DevTools (CDP) address: ${address}. With browser-use, start with \`browser-use --session pane-${portOf(address)} --cdp-url ${address} state\`, then leave out --cdp-url (\`browser-use --session pane-${portOf(address)} click 4\`).`
+
 function startHelper($: EngineInterface): Promise<Helper> {
   helper ??= new Promise<Helper>((resolve, reject) => {
     void runHelper($, resolve, reject)
@@ -114,10 +121,7 @@ async function runHelper(
   let isReady = false
 
   try {
-    const child = $.process.spawn({
-      argv: ['node', `${$.plugin.root}/helper/browser.mjs`],
-      env: { BROWSER_PANE_PORT: String(PORT) },
-    })
+    const child = $.process.spawn({ argv: ['node', `${$.plugin.root}/helper/browser.mjs`] })
 
     for await (const chunk of child) {
       if (chunk.stream === 'stderr') {
@@ -168,6 +172,7 @@ async function runHelper(
     await releaseLinks($)
     await update($, tabs, () => [])
     await update($, activeId, () => null)
+    await update($, cdp, () => null)
     await update($, phase, () => 'failed')
     await update($, problem, () => lastWords.trim().split('\n').at(-1) || 'The browser helper stopped.')
   } catch {
@@ -177,6 +182,8 @@ async function runHelper(
 
 async function onHelperMessage($: EngineInterface, message: HelperMessage) {
   if (message.t === 'cdp') {
+    await update($, cdp, () => message.url)
+    await update($, profile, () => message.profile)
     await update($, phase, () => 'running')
   } else if (message.t === 'tabs') {
     await update($, tabs, () => message.tabs)
@@ -186,6 +193,7 @@ async function onHelperMessage($: EngineInterface, message: HelperMessage) {
     void openPane($, false)
   } else if (message.t === 'closed') {
     latestFrame = null
+    await update($, cdp, () => null)
     await update($, phase, () => 'stopped')
   }
 }
@@ -376,12 +384,12 @@ export const register: Register = on => {
     }
 
     const { isPlaced } = await openPane($, false)
+    const address = await read($, cdp)
+    const opened = isPlaced
+      ? `Opened ${url} in the browser pane.`
+      : `Loaded ${url} in the browser pane, which is waiting for room on screen; the user can show it with /browser.`
 
-    return {
-      result: isPlaced
-        ? `Opened ${url} in the browser pane. Drive it over CDP at ${CDP_URL} to click or read it.`
-        : `Loaded ${url} in the browser pane, which is waiting for room on screen; the user can show it with /browser.`,
-    }
+    return { result: address === null ? opened : `${opened} ${driveHint(address)}` }
   })
 
   on('tool.call', { tool: STATUS_PATTERN }, async $ => {
@@ -393,9 +401,11 @@ export const register: Register = on => {
         tab => `${tab.id === status.activeId ? '* ' : '  '}${tab.title || '(untitled)'} - ${tab.url}`,
       )
 
+      const address = typeof status.cdp === 'string' ? status.cdp : ''
+
       return {
         result: [
-          `Chrome is running; DevTools (CDP) at ${CDP_URL}.`,
+          `This session's Chrome is running on browser profile ${String(status.profile)}. ${driveHint(address)}`,
           lines.length === 0 ? 'No tabs are open.' : `Tabs (* is the one the pane shows):\n${lines.join('\n')}`,
         ].join('\n'),
       }
@@ -491,6 +501,8 @@ export const register: Register = on => {
     const shownId = await read($, activeId)
     const state = await read($, phase)
     const why = await read($, problem)
+    const address = await read($, cdp)
+    const profileNumber = await read($, profile)
     const pageZoom = await read($, zoom)
     const isCatching = await read($, isCatchingLinks)
     const holder = await read($, focused)
@@ -507,7 +519,10 @@ export const register: Register = on => {
     const status: Record<HelperPhase, { color: string; text: string }> = {
       starting: { color: 'warning', text: 'starting…' },
       stopped: { color: 'inactive', text: 'Chrome starts with the first page' },
-      running: { color: 'success', text: `Chrome · Claude can drive it at :${PORT}` },
+      running: {
+        color: 'success',
+        text: `Chrome · profile ${profileNumber ?? '?'} · Claude drives it at :${address === null ? '?' : portOf(address)}`,
+      },
       failed: { color: 'error', text: why || 'The browser stopped.' },
     }
     const empty =

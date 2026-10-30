@@ -6,8 +6,9 @@ A Claude Code mod that puts a real Chrome in a pane beside the chat. Links open 
 
 - A **Browser** pane with back, forward and reload, an address bar that also searches (DuckDuckGo), a tab strip and the live page, drawn as a picture in the terminal. Click on the page and type into it as you would in a browser; `Esc` hands the keyboard back.
 - **Links open in the pane.** The mod points the session's `BROWSER` at the pane, so links Claude Code opens itself (a published artifact, a sign-in page) land there instead of your desktop browser, as do links from tools that honour `BROWSER` (`gh auth login --web`, Python's `webbrowser`). The **links: pane / links: desktop** button in the status line switches this off, and **↗** opens the shown page in your desktop browser.
-- **Claude can drive it.** Claude gets an `open` tool for showing you a page and a `status` tool that reports the tabs. To click, type, read or screenshot, it connects to the same Chrome over the DevTools protocol at `127.0.0.1:9333` with [browser-use](https://github.com/browser-use/browser-use) or Playwright, and the pane follows what it does.
-- Chrome runs headless with its own profile, kept in `~/.local/share/claude-browser-pane/profile`, so sign-ins there persist between sessions and none of your desktop browser's logins are in it. It starts with the first page you open and stops when the session ends.
+- **Claude can drive it.** Claude gets an `open` tool for showing you a page and a `status` tool that reports the tabs. To click, type, read or screenshot, it connects to the same Chrome over the DevTools protocol with [browser-use](https://github.com/browser-use/browser-use) or Playwright, and the pane follows what it does.
+- **One Chrome per session.** Each Claude Code session runs its own headless Chrome on a DevTools port Chrome picks, so two sessions can browse at once without stepping on each other, and Claude in each session drives only its own. The status line shows the port.
+- **Profiles keep their sign-ins.** Chrome locks a profile to one instance, so each session takes the first free profile from a pool of nine in `~/.local/share/claude-browser-pane/` (`profile`, then `profile-2` and up). A session on its own always gets profile 1; a second session open at the same time gets profile 2, with sign-ins of its own. None of your desktop browser's logins are in any of them. Chrome starts with the first page you open, and stops (freeing its profile) when you close its last tab or the session ends.
 
 ## Using it
 
@@ -30,7 +31,7 @@ A Claude Code mod that puts a real Chrome in a pane beside the chat. Links open 
 
 ## Safety
 
-Anything that can reach `127.0.0.1:9333` on your machine can control this Chrome, Claude included, with no per-site permission prompt (unlike the Claude in Chrome extension). Keep sensitive accounts (banking, admin consoles) out of the pane's profile.
+Anything on your machine that can reach a session's DevTools port on `127.0.0.1` can control that Chrome, Claude included, with no per-site permission prompt (unlike the Claude in Chrome extension). Keep sensitive accounts (banking, admin consoles) out of the pane's profiles.
 
 ## Requirements
 

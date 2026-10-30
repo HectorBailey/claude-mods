@@ -30,7 +30,7 @@ const fakeHelper = (on: On) => {
   mock.clock(on)
   mock.store(on)
   on('process.spawn', async function* () {
-    yield { stream: 'stdout' as const, text: `{"t":"ready","socket":"${SOCKET}"}\n{"t":"cdp","url":"http://127.0.0.1:9333"}\n` }
+    yield { stream: 'stdout' as const, text: `{"t":"ready","socket":"${SOCKET}"}\n{"t":"cdp","url":"http://127.0.0.1:41235","profile":2}\n` }
     await new Promise(() => {})
 
     return { code: 0, signal: null }
@@ -69,6 +69,17 @@ test('the open tool loads the page in the pane and links are pointed at it', asy
   expect(sent).toContainEqual({ op: 'open', url: 'example.com', isNewTab: false })
   expect(env.BROWSER).toMatch(/\/bin\/open-in-pane$/)
   expect(env.CLAUDE_BROWSER_PANE_SOCKET).toBe(SOCKET)
+})
+
+test("Claude is pointed at this session's own Chrome, not a fixed port", async ($, on) => {
+  fakeHelper(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  const opened = await callTool($, { tool: 'mcp__browser-pane__open', url: 'example.com' })
+  const text = opened.text ?? JSON.stringify(opened.result)
+
+  expect(text).toContain('http://127.0.0.1:41235')
+  expect(text).toContain('--session pane-41235')
 })
 
 test('clicks and keys on the page reach Chrome once each, in order', async ($, on) => {

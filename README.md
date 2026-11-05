@@ -5,7 +5,6 @@ Mods for [Claude Code](https://claude.com/claude-code) by Hector Bailey. A mod c
 | Mod | What it does |
 | --- | --- |
 | [decision-log](decision-log/) | Claude logs its judgement calls as it works; approve or reject each one, with a comment, from a side pane. Rejections go straight back to Claude so it revisits them. |
-| [browser-pane](browser-pane/) | A real Chrome in a pane beside the chat. Links open there instead of your desktop browser, and Claude can drive the same browser while you watch. |
 
 ## Install
 
@@ -23,7 +22,6 @@ When a mod here changes, pull the new version and reload:
 
 ```bash
 claude plugin update decision-log@hectorbailey
-claude plugin update browser-pane@hectorbailey
 ```
 
 then run `/reload-plugins` in any open session.
